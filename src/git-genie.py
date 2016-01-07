@@ -1,5 +1,5 @@
 #-------------------------------------------------------------------------------
-# Name:        module1
+# Name:        GitGenie Test application
 # Purpose:
 #
 # Author:      chandp4
@@ -10,12 +10,13 @@
 #-------------------------------------------------------------------------------
 #Data structures
 import pandas as panda
-#Computational Algorithms
+#Numerical algorithms
 import numpy as numpy
 #Import plotting library
 import matplotlib.pyplot as pyplt
-#Import os to call GIT commands
+#Import os to ease directory manipulation
 import os
+#Import this to ease calling GIT commands
 import subprocess as subproc
 
 #General Statistics of a GIT repository
@@ -25,6 +26,7 @@ class RepoStats(object):
         self.code_deletions = 0
         self.code_changes = 0
         self.files_changed = 0
+        self.num_of_commits = 0
         self.repo_name = name
     def __str__(self):
         return 'Repository: ' + self.repo_name + ' Code changes: ' + self.code_changes.__str__()
@@ -33,6 +35,7 @@ class RepoStats(object):
         self.code_additions += code_additions
         self.code_deletions += code_deletions
         self.files_changed += files_changed
+        self.num_of_commits += 1
         self.code_changes = self.code_additions + self.code_deletions
 
 class GitStatEntry(object):
@@ -75,7 +78,7 @@ class DeveloperStats(object):
     __month_list = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Oct","Sep","Nov","Dec"]
     __base_repo = 'scl'
     def __init__(self):
-        self.list_of_commits = []
+        self.num_of_commits = 0
         initial_table_data = self.__createRepoStatList(DeveloperStats.__base_repo)
         initial_series = panda.Series(initial_table_data,index=DeveloperStats.__month_list)
         initial_dict = {DeveloperStats.__base_repo: initial_series}
@@ -132,6 +135,7 @@ class Developer(DeveloperStats):
         if git_stat_entry.repo not in self.repos_worked_on:
             self.repos_worked_on.append(git_stat_entry.repo)
             self.addRepo(git_stat_entry.repo)
+        self.num_of_commits += 1
         self.__updateMonthlyStat(git_stat_entry)
         self.__updateAllRepoMonthlyStat(git_stat_entry)
 
@@ -321,112 +325,122 @@ class DeveloperList(object):
 
     def getMostActiveDeveloper(self):
         most_active_developer_idx = 0
-        max_code_changes = 0
+        max_commits = 0
         for developer in self.developer_list:
-            developer.calConsolidatedAnnualStats()
-            if (max_code_changes < developer.annual_stat.code_changes):
-                max_code_changes = developer.annual_stat.code_changes
+            if developer.num_of_commits > max_commits:
+                max_commits = developer.num_of_commits
                 most_active_developer_idx = self.developer_list.index(developer)
         return self.developer_list[most_active_developer_idx]
 
 
+class GitGenie(object):
+    genie_id = 0
+    def __init__(self,searchpath,outpath,developer_list):
+        self.outpath = searchpath
+        self.seedpath = outpath
+        self.developer_list = developer_list
 
-def getGitStats(path):
-    os.chdir(path)
-    git_proc = subproc.Popen(["git", "log",'--all',"--pretty=format:'--@--%cn---Commit:%h---%cd-#--","--shortstat" , "--since='12 month ago'", "--no-merges"],stdout=subproc.PIPE)
-    stats = git_proc.stdout.read()
-    return stats
+    def run(self):
+        self.genieRecursiveSearch(self.seedpath)
+        self.saveResults()
 
-def parseGitStats(gitstats,repo_name):
-    git_stat_list = []
-    files_changed = 0
-    insertions = 0
-    deletions = 0
-    stat_str = gitstats.__str__()
-    commit_history = stat_str.split("b",maxsplit=1)[1]
-    commit_entries = commit_history.split("--@--")
-    for entry in commit_entries:
-        if (len(entry) > 2):
-            commit_stat = GitStatEntry()
-            (author,sep,left_over) = entry.partition("---")
-            (sha_id,sep,left_over) = left_over.partition("---")
-            (commit_date,sep,left_over) = left_over.partition('-#--')
-            additional_stats = left_over.split(',')
-            if(len(additional_stats)<2):
-                files_changed = 0
-                insertions = 0
-                deletions = 0
+#Recursively find GIT directories in search path
+    def genieRecursiveSearch(self,searchpath):
+        os.chdir(searchpath)
+        list_of_subdirs = os.listdir(searchpath)
+        if len(list_of_subdirs) != 0:
+            if ".git" not in list_of_subdirs:
+                for directory in list_of_subdirs:
+                    if os.path.isdir(directory):
+                        new_path = os.path.join(searchpath,directory)
+                        #Recursively search for GIT directories
+                        self.genieRecursiveSearch(new_path)
+                        parent_dir = os.path.split(new_path)[0]
+                        os.chdir(parent_dir)
             else:
-                for i in range(0,len(additional_stats)):
-                    if (i==0):
-                        files_changed = int((additional_stats[0].split())[1])
-                    elif(i==1):
-                        insertions=int((additional_stats[1].split())[0])
-                    else:
-                        deletions=int((additional_stats[2].split())[0])
-            commit_stat.storeDetails(author,insertions,deletions,files_changed,commit_date,repo_name)
-            git_stat_list.append(commit_stat)
-    return git_stat_list
+                print('Calculating statistics from ' + os.path.basename(searchpath))
+                #Extract statistics from GIT repository
+                self.extractStatsFromRepo(searchpath)
+
+#Extracts statistics from a GIT repository and updates the Genies developer list
+    def extractStatsFromRepo(self,path):
+        ugly_stats = self.runGitLog(path)
+        repo_name = os.path.basename(path)
+        neat_stats = self.parseGitStats(ugly_stats,repo_name)
+        for stat in neat_stats:
+            self.developer_list.updateDeveloperList(stat)
+
+#Run GIT log in the given path
+    def runGitLog(self,path):
+        os.chdir(path)
+        git_proc = subproc.Popen(["git", "log",'--all',"--pretty=format:'--@--%cn---Commit:%h---%cd-#--","--shortstat" , "--since='12 month ago'", "--no-merges"],stdout=subproc.PIPE)
+        stats = git_proc.stdout.read()
+        return stats
+
+#Parse the commit information obtained after running GIT Log
+    def parseGitStats(self,gitstats,repo_name):
+        git_stat_list = []
+        files_changed = 0
+        insertions = 0
+        deletions = 0
+        stat_str = gitstats.__str__()
+        commit_history = stat_str.split("b",maxsplit=1)[1]
+        commit_entries = commit_history.split("--@--")
+        for entry in commit_entries:
+            if (len(entry) > 2):
+                commit_stat = GitStatEntry()
+                (author,sep,left_over) = entry.partition("---")
+                (sha_id,sep,left_over) = left_over.partition("---")
+                (commit_date,sep,left_over) = left_over.partition('-#--')
+                additional_stats = left_over.split(',')
+                if(len(additional_stats)<2):
+                    files_changed = 0
+                    insertions = 0
+                    deletions = 0
+                else:
+                    for i in range(0,len(additional_stats)):
+                        if (i==0):
+                            files_changed = int((additional_stats[0].split())[1])
+                        elif(i==1):
+                            insertions=int((additional_stats[1].split())[0])
+                        else:
+                            deletions=int((additional_stats[2].split())[0])
+                commit_stat.storeDetails(author,insertions,deletions,files_changed,commit_date,repo_name)
+                git_stat_list.append(commit_stat)
+        return git_stat_list
+
+#Creates charts in output directory
+    def saveResults(self):
+        for developer in self.developer_list.developer_list:
+            print('Saving results for '+developer.name)
+            developer.plotMonthlyStats(self.outpath)
+            developer.plotAnnualStats(self.outpath)
+            developer.plotStatsByRepo(self.outpath)
+        best_developer = self.developer_list.getMostActiveDeveloper()
+        print('Developer with maximum commits: '+best_developer.name)
+        print('Number of commits: '+best_developer.num_of_commits.__str__())
+        print('Saving consolidated statistics for all developers')
+        self.developer_list.saveListStats(self.outpath)
+
+#Destructor
+    def __del__(self):
+        self.outpath = ""
+        self.seedpath = ""
+        self.developer_list = []
+#Printer
+    def __str__(self):
+        print_str = 'GIT Genie ' + GitGenie.genie_id.__str__() + '\n'
+        print_str += 'Search Path: ' + self.seedpath + '\n'
+        print_str += 'Output Path: ' + self.outpath
+        return print_str
 
 #Global developer list
 global_developer_list = DeveloperList()
 
-def testGitStat(path):
-    ugly_stats = getGitStats(path)
-    repo_name = os.path.basename(path)
-    neat_stats = parseGitStats(ugly_stats,repo_name)
-    for stat in neat_stats:
-        global_developer_list.updateDeveloperList(stat)
-
-
-def saveDeveloperStats():
-    outpath = "C:\\Prashanth\\CAT\\MyRepo\\git-genie"
-    for developer in global_developer_list.developer_list:
-        developer.plotMonthlyStats(outpath)
-        developer.plotAnnualStats(outpath)
-        developer.plotStatsByRepo(outpath)
-    best_developer = global_developer_list.getMostActiveDeveloper()
-    print(best_developer)
-    global_developer_list.saveListStats(outpath)
-
-def findGitDirs(view_path):
-    os.chdir(view_path)
-    list_of_subdirs = os.listdir(view_path)
-    print("In folder " + view_path)
-    if len(list_of_subdirs) != 0:
-        if ".git" not in list_of_subdirs:
-            for directory in list_of_subdirs:
-                if os.path.isdir(directory):
-                    new_path = os.path.join(view_path,directory)
-                    findGitDirs(new_path)
-                    parent_dir = os.path.split(new_path)[0]
-                    os.chdir(parent_dir)
-        else:
-            print(view_path + "is a GIT directory.. Calculating statistics")
-            testGitStat(view_path)
-            print("Stats collected for "+view_path)
-
-
-def testRecursiveGitSearch(view_path):
-    findGitDirs(view_path)
-
-
-
-def testDf():
-    month_list = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Oct","Sep","Nov","Dec"]
-    df = panda.DataFrame(index=month_list,columns=['scl'],dtype=RepoStats)
-    new_repo = "hal"
-    series = panda.Series(index=month_list,dtype=RepoStats)
-    row = panda.Series(index=df.columns,dtype=RepoStats)
-    df[new_repo] = series
-    print(df)
-
 def main():
-    #testGitStat("C:\\ivy\\ethernet_hal_platform_arch\\lib\\lib_a4\\scl")
-    #testGitStat("C:\\ivy\\ethernet_hal_platform_arch\\lib\\lib_csf\\csf_eth_health")
-    #testDf()
-    testRecursiveGitSearch("C:\\ivy\\ethernet_hal_platform_arch\\lib\\lib_a4")
-    saveDeveloperStats()
+    genie = GitGenie("C:\\Prashanth\\CAT\\MyRepo\\git-genie","C:\\ivy\\ethernet_hal_platform_arch\\lib\\lib_csf",global_developer_list)
+    print(genie)
+    genie.run()
 
 if __name__ == '__main__':
     main()
